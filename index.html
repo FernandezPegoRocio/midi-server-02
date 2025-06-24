@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body, html {
+            background-color: black;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            font-family: 'Nunito', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            margin: 0;
+            padding: 0;
+            display: block;
+            touch-action: none;
+            border: 2px solid #333;
+        }
+    </style>
+    <title>MIDI Snake Controller</title>
+</head>
+<body>
+    <canvas></canvas>
+    <script>
+        // WebSocket connection with reconnection logic
+        let ws;
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:3001');
+            ws.onopen = () => {
+                console.log('WebSocket connection opened');
+            };
+            ws.onmessage = (event) => {
+                console.log(`Message from server: ${event.data}`);
+            };
+            ws.onclose = () => {
+                console.log('WebSocket closed. Reconnecting...');
+                setTimeout(connectWebSocket, 1000);
+            };
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+        connectWebSocket();
+
+        function isOpen(ws) { return ws.readyState === ws.OPEN; }
+
+        // Canvas setup
+        const canvas = document.querySelector('canvas');
+        const c = canvas.getContext('2d');
+        const gridSize = 20;
+        const cols = Math.floor(window.innerWidth * 0.8 / gridSize);
+        const rows = Math.floor(window.innerHeight * 0.8 / gridSize);
+        canvas.width = cols * gridSize;
+        canvas.height = rows * gridSize;
+
+        window.addEventListener('resize', () => {
+            const newCols = Math.floor(window.innerWidth * 0.8 / gridSize);
+            const newRows = Math.floor(window.innerHeight * 0.8 / gridSize);
+            canvas.width = newCols * gridSize;
+            canvas.height = newRows * gridSize;
+            initGame();
+        });
+
+        // Pentatonic scale MIDI notes (C4, D4, E4, G4, A4)
+        const pentatonicNotes = [60, 62, 64, 67, 69];
+        let noteIndex = 0;
+
+        // Snake setup
+        let snake = [{ x: Math.floor(cols / 2), y: Math.floor(rows / 2) }];
+        let direction = { x: 1, y: 0 };
+        let nextDirection = { x: 1, y: 0 };
+        let speed = 100; // Milliseconds per move
+
+        // Handle mouse click to change direction
+        canvas.addEventListener('click', (event) => {
+            console.log('Click detected:', event.clientX, event.clientY);
+            const rect = canvas.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            const head = snake[0];
+            const headPixelX = head.x * gridSize + gridSize / 2;
+            const headPixelY = head.y * gridSize + gridSize / 2;
+
+            if (Math.abs(clickX - headPixelX) > Math.abs(clickY - headPixelY)) {
+                nextDirection = clickX > headPixelX ? { x: 1, y: 0 } : { x: -1, y: 0 };
+            } else {
+                nextDirection = clickY > headPixelY ? { x: 0, y: 1 } : { x: 0, y: -1 };
+            }
+
+            // Prevent reversing direction
+            if (nextDirection.x === -direction.x && nextDirection.y === -direction.y) {
+                nextDirection = direction;
+            }
+        });
+
+        // Send MIDI note
+        function sendMIDINote(note, velocity = 127) {
+            // Send Note On
+            const noteOnMessage = JSON.stringify({
+                ccNumber: 144, // Note On
+                ccValue: note,
+                value: velocity
+            });
+            if (isOpen(ws)) {
+                ws.send(noteOnMessage);
+                console.log(`Sent Note On: ${note}, velocity: ${velocity}`);
+            }
+
+            // Send Note Off after 100ms
+            setTimeout(() => {
+                const noteOffMessage = JSON.stringify({
+                    ccNumber: 128, // Note Off
+                    ccValue: note,
+                    value: 0
+                });
+                if (isOpen(ws)) {
+                    ws.send(noteOffMessage);
+                    console.log(`Sent Note Off: ${note}`);
+                }
+            }, 100);
+        }
+
+        function initGame() {
+            snake = [{ x: Math.floor(cols / 2), y: Math.floor(rows / 2) }];
+            direction = { x: 1, y: 0 };
+            nextDirection = { x: 1, y: 0 };
+            noteIndex = 0;
+        }
+
+        function drawGrid() {
+            c.fillStyle = '#111';
+            c.fillRect(0, 0, canvas.width, canvas.height);
+            c.strokeStyle = '#333';
+            for (let x = 0; x <= canvas.width; x += gridSize) {
+                c.beginPath();
+                c.moveTo(x, 0);
+                c.lineTo(x, canvas.height);
+                c.stroke();
+            }
+            for (let y = 0; y <= canvas.height; y += gridSize) {
+                c.beginPath();
+                c.moveTo(0, y);
+                c.lineTo(canvas.width, y);
+                c.stroke();
+            }
+        }
+
+        function drawSnake() {
+            snake.forEach((segment, index) => {
+                c.fillStyle = index === 0 ? '#0f0' : `hsl(${index * 60}, 70%, 50%)`;
+                c.fillRect(segment.x * gridSize, segment.y * gridSize, gridSize - 2, gridSize - 2);
+            });
+        }
+
+        function updateSnake() {
+            direction = nextDirection;
+            const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+
+            // Wrap around edges
+            if (head.x >= cols) head.x = 0;
+            else if (head.x < 0) head.x = cols - 1;
+            if (head.y >= rows) head.y = 0;
+            else if (head.y < 0) head.y = rows - 1;
+
+            // Add new head
+            snake.unshift(head);
+
+            // Remove tail and play note
+            if (snake.length > 10) { // Limit snake length
+                snake.pop();
+            } else {
+                const note = pentatonicNotes[noteIndex % pentatonicNotes.length];
+                sendMIDINote(note);
+                noteIndex++;
+            }
+        }
+
+        function animate() {
+            setTimeout(() => {
+                requestAnimationFrame(animate);
+                drawGrid();
+                updateSnake();
+                drawSnake();
+            }, speed);
+        }
+
+        initGame();
+        animate();
+    </script>
+</body>
+</html>
